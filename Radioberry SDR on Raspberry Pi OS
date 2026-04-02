@@ -1,0 +1,456 @@
+# Radioberry SDR on Raspberry Pi OS: Complete Installation & Troubleshooting Guide
+
+A comprehensive guide to installing Radioberry SDR on Raspberry Pi OS 32-bit, including solutions for kernel header issues, gateware programming problems, and the dreaded "255-255" gateware version error.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Prerequisites](#prerequisites)
+- [Part 1: Base OS Installation](#part-1-base-os-installation)
+- [Part 2: Radioberry Driver Installation](#part-2-radioberry-driver-installation)
+- [Part 3: Post-Installation Configuration](#part-3-post-installation-configuration)
+- [Part 4: Troubleshooting Common Issues](#part-4-troubleshooting-common-issues)
+  - [4.1 Kernel Headers Not Found](#41-kernel-headers-not-found)
+  - [4.2 Module Architecture Mismatch (Exec Format Error)](#42-module-architecture-mismatch-exec-format-error)
+  - [4.3 Device Node Not Created](#43-device-node-not-created)
+  - [4.4 Gateware Version 255-255 (FPGA Not Programming)](#44-gateware-version-255-255-fpga-not-programming)
+  - [4.5 Service Keeps Restarting](#45-service-keeps-restarting)
+- [Part 5: Verification Checklist](#part-5-verification-checklist)
+- [Part 6: Uninstallation](#part-6-uninstallation)
+- [References](#references)
+
+## Overview
+
+Radioberry is a SDR (Software Defined Radio) transceiver that connects to the Raspberry Pi GPIO header. This guide covers installation on **Raspberry Pi OS 32-bit (Legacy, Bookworm)** and resolves common issues including:
+
+- Kernel header mismatches
+- 64-bit vs 32-bit kernel conflicts
+- Gateware programming failures (255-255 error)
+- Service configuration problems
+
+**Tested on:**
+- Raspberry Pi 4 Model B
+- Radioberry V2 with Cyclone 10 CL016 FPGA
+- Raspberry Pi OS (Legacy, 32-bit) Bookworm
+
+## Prerequisites
+
+- Raspberry Pi 4 (recommended)
+- Radioberry SDR board
+- MicroSD card (16GB minimum)
+- 5V/3A power supply for Raspberry Pi
+- Internet connection
+
+## Part 1: Base OS Installation
+
+### 1.1 Download and Install Raspberry Pi OS
+
+Download **Raspberry Pi OS (Legacy, 32-bit)** from the official Raspberry Pi website.
+
+### 1.2 Initial Setup
+
+```bash
+# Update the system
+sudo apt update && sudo apt upgrade -y
+
+# Install essential build tools
+sudo apt install -y build-essential dkms git device-tree-compiler
+1.3 Force 32-bit Kernel (Critical for Pi 4/5)
+Edit the boot configuration:
+
+bash
+sudo nano /boot/firmware/config.txt
+Add or modify these lines:
+
+ini
+# Force 32-bit mode for Radioberry
+arm_64bit=0
+kernel=kernel7l.img
+Reboot:
+
+bash
+sudo reboot
+Verify:
+
+bash
+uname -m
+# Should show: armv7l
+Part 2: Radioberry Driver Installation
+2.1 Install Kernel Headers
+bash
+sudo apt install -y raspberrypi-kernel-headers
+
+# Verify headers are installed
+ls /usr/src/linux-headers-$(uname -r)
+2.2 Download Radioberry Source
+bash
+cd /tmp
+git clone https://github.com/pa3gsb/Radioberry-2.x.git
+cd Radioberry-2.x
+2.3 Build and Install
+bash
+# Clean previous builds
+make clean
+
+# Install for Cyclone 10 CL016 (adjust FPGA type as needed)
+sudo make install FPGATYPE=CL016
+2.4 Install the Device Tree Overlay
+bash
+# Copy the overlay
+sudo cp /tmp/Radioberry-2.x/SBC/rpi-4/device_driver/driver/radioberry.dtbo /boot/firmware/overlays/
+
+# Configure boot settings
+sudo bash -c 'cat >> /boot/firmware/config.txt << EOF
+
+# Radioberry settings
+dtparam=spi=off
+dtoverlay=radioberry
+EOF'
+
+# Reboot
+sudo reboot
+2.5 Install Radioberry Daemon
+bash
+# Copy daemon binary
+sudo cp /tmp/Radioberry-2.x/SBC/rpi-4/device_driver/firmware/radioberry /usr/local/bin/
+sudo chmod +x /usr/local/bin/radioberry
+
+# Fix service permissions
+sudo chmod -x /etc/systemd/system/radioberry.service
+sudo systemctl daemon-reload
+2.6 Start the Service
+bash
+sudo systemctl enable radioberry
+sudo systemctl start radioberry
+sudo systemctl status radioberry
+Part 3: Post-Installation Configuration
+3.1 Fix Device Permissions
+Add the ExecStartPre line to the service file:
+
+bash
+sudo nano /etc/systemd/system/radioberry.service
+Add this line after ExecStart:
+
+ini
+ExecStartPre=/bin/sh -c 'chmod 666 /dev/radioberry'
+Then:
+
+bash
+sudo systemctl daemon-reload
+sudo systemctl restart radioberry
+3.2 Add User to Required Groups
+bash
+sudo usermod -a -G gpio,dialout,spi,i2c pi
+# Reboot to apply changes
+sudo reboot
+3.3 Verify Installation
+bash
+# Check module is loaded
+lsmod | grep radioberry
+
+# Check device node
+ls -la /dev/radioberry
+
+# Check gateware version (should NOT be 255-255)
+sudo radioberry -v
+
+# Check kernel messages
+dmesg | grep -i radioberry | tail -20
+Part 4: Troubleshooting Common Issues
+4.1 Kernel Headers Not Found
+Error:
+
+text
+make: *** /lib/modules/6.12.47+rpt-rpi-v8/build: No such file or directory
+Solution:
+
+bash
+# Reinstall kernel headers
+sudo apt install --reinstall raspberrypi-kernel-headers
+
+# Create symlink manually if needed
+sudo ln -sf /usr/src/linux-headers-$(uname -r) /lib/modules/$(uname -r)/build
+4.2 Module Architecture Mismatch (Exec Format Error)
+Error:
+
+text
+modprobe: ERROR: could not insert 'radioberry': Exec format error
+Cause: Running 64-bit kernel with 32-bit module or vice versa.
+
+Solution: Force 32-bit kernel mode:
+
+bash
+# Add to /boot/firmware/config.txt
+arm_64bit=0
+kernel=kernel7l.img
+
+# Reboot
+sudo reboot
+
+# Verify
+uname -m  # Should show armv7l
+4.3 Device Node Not Created
+Symptom: Module loads but /dev/radioberry doesn't exist.
+
+Solution:
+
+bash
+# Check if overlay is loaded
+ls /proc/device-tree/ | grep radio
+
+# If not, reload overlay
+sudo dtoverlay radioberry
+
+# Or reboot with correct config
+sudo reboot
+4.4 Gateware Version 255-255 (FPGA Not Programming)
+Symptom:
+
+text
+Radioberry gateware version 255-255.
+This is the most common critical error. It means the FPGA is not being programmed.
+
+Causes and Solutions:
+
+4.4.1 Wrong Gateware File Size
+The gateware file must be the correct size (335,337 bytes for CL016):
+
+bash
+# Check gateware size
+ls -la /lib/firmware/radioberry.rbf
+
+# If size is wrong (e.g., 276,233 bytes), copy from working source
+sudo cp /tmp/Radioberry-2.x/SBC/rpi-4/releases/dev/CL016/radioberry.rbf /lib/firmware/
+4.4.2 SPI Configuration Conflict
+Radioberry requires dtparam=spi=off (it uses direct GPIO, not SPI):
+
+bash
+# Verify in /boot/firmware/config.txt
+cat /boot/firmware/config.txt | grep spi
+
+# Should show: dtparam=spi=off
+# If it shows "on", change it to "off" and reboot
+4.4.3 Kernel Version Incompatibility
+Radioberry works reliably with kernel 5.10.103 but may fail with newer kernels (6.12.x).
+
+Check current kernel:
+
+bash
+uname -r
+If you have a working setup with kernel 5.10.103, install that kernel:
+
+bash
+# Install older kernel
+sudo apt update
+sudo apt install linux-image-5.10.103-v7l+ linux-headers-5.10.103-v7l+
+
+# Remove problematic kernel
+sudo apt remove linux-image-6.12.47+rpt-rpi-v7l
+
+# Update bootloader
+sudo update-initramfs -u
+
+# Reboot
+sudo reboot
+4.4.4 Verify Gateware Programming
+After fixes, reload the module:
+
+bash
+sudo modprobe -r radioberry
+sudo modprobe radioberry
+sudo dmesg | grep -i radioberry | tail -10
+Expected output should show:
+
+text
+Radioberry gateware file size: 335337
+Then check version:
+
+bash
+sudo radioberry -v
+Should show a proper version like 73-3 or 94, not 255-255.
+
+4.5 Service Keeps Restarting
+Symptom: systemctl status radioberry shows constant restarting.
+
+Solution:
+
+bash
+# Check logs
+sudo journalctl -u radioberry -n 50 --no-pager
+
+# Ensure daemon binary exists
+ls -la /usr/local/bin/radioberry
+
+# Reinstall daemon if missing
+sudo cp /tmp/Radioberry-2.x/SBC/rpi-4/device_driver/firmware/radioberry /usr/local/bin/
+sudo chmod +x /usr/local/bin/radioberry
+Part 5: Verification Checklist
+Run this script to verify everything is working:
+
+bash
+#!/bin/bash
+echo "=== Radioberry Installation Verification ==="
+
+echo -n "1. Kernel Architecture: "
+uname -m
+
+echo -n "2. Kernel Version: "
+uname -r
+
+echo -n "3. Radioberry Module: "
+lsmod | grep -q radioberry && echo "LOADED" || echo "NOT LOADED"
+
+echo -n "4. Device Node: "
+[ -e /dev/radioberry ] && echo "EXISTS" || echo "MISSING"
+
+echo -n "5. Device Permissions: "
+ls -la /dev/radioberry 2>/dev/null | cut -d' ' -f1
+
+echo -n "6. Device Tree Overlay: "
+ls /proc/device-tree/ | grep -q radio && echo "LOADED" || echo "NOT LOADED"
+
+echo -n "7. Service Status: "
+sudo systemctl is-active radioberry
+
+echo "8. Gateware Version:"
+sudo radioberry -v 2>&1 | grep -i "gateware version"
+
+echo -n "9. Gateware File Size: "
+ls -la /lib/firmware/radioberry.rbf 2>/dev/null | awk '{print $5}'
+
+echo "10. Recent Kernel Messages:"
+sudo dmesg | grep -i radioberry | tail -3
+Part 6: Uninstallation
+bash
+# Stop and disable service
+sudo systemctl stop radioberry
+sudo systemctl disable radioberry
+
+# Remove module
+sudo modprobe -r radioberry
+
+# Remove files
+sudo rm -f /lib/modules/$(uname -r)/kernel/drivers/sdr/radioberry.ko
+sudo rm -f /usr/local/bin/radioberry
+sudo rm -f /usr/local/bin/pihpsdr
+sudo rm -f /usr/local/lib/libwdsp.so
+sudo rm -f /lib/firmware/radioberry.rbf
+sudo rm -f /etc/systemd/system/radioberry.service
+sudo rm -f /etc/init.d/radioberryd
+sudo rm -f /boot/firmware/overlays/radioberry.dtbo
+
+# Remove config lines from /boot/firmware/config.txt (manual edit)
+sudo nano /boot/firmware/config.txt
+# Remove: dtparam=spi=off and dtoverlay=radioberry
+
+# Update module dependencies
+sudo depmod -a
+
+# Reboot
+sudo reboot
+Key Lessons Learned
+32-bit kernel is required - The Radioberry driver is compiled for 32-bit ARM. Use arm_64bit=0 and kernel=kernel7l.img in config.txt.
+
+SPI must be OFF - Radioberry uses direct GPIO, not SPI. Set dtparam=spi=off.
+
+Gateware file must be correct size - For CL016, the working gateware is 335,337 bytes. The 276,233 byte version causes the 255-255 error.
+
+Kernel 5.10.103 works reliably - Newer kernels (6.12.x) may have compatibility issues.
+
+Module location matters - Install to /lib/modules/*/kernel/drivers/sdr/, not /extra/.
+
+Device permissions need fixing - Add chmod 666 /dev/radioberry to the service file.
+
+References
+Radioberry GitHub Repository
+
+Raspberry Pi Documentation
+
+Radioberry Forum
+
+Credits
+This guide was compiled from extensive troubleshooting on Raspberry Pi 4 with Radioberry V2 (Cyclone 10 CL016). Special thanks to Johan PA3GSB for creating Radioberry.
+
+Last Updated: April 2026
+Tested With: Raspberry Pi OS (Legacy, 32-bit) Bookworm, Kernel 5.10.103-v7l+
+
+text
+pi@pi:~ ls -l  /dev/radioberry
+crw------- 1 root root 239, 0 Apr  2 14:20 /dev/radioberry
+pi@pi:~ $ sudo chmod 666 /dev/radioberry
+pi@pi:~ $ sudo systemctl start radioberry
+pi@pi:~ $ sudo systemctl status radioberry --no-pager
+
+after restart the permission changing - what to do ?
+The permission change is not persistent because it gets reset when the module reloads or the system reboots. You need to make it permanent. Here are three solutions:
+
+Solution 1: Add to Service File (Recommended)
+Edit the radioberry service to set permissions on every start:
+
+bash
+sudo nano /etc/systemd/system/radioberry.service
+Add the ExecStartPre line as shown:
+
+ini
+[Unit]
+Description=Radioberry SDR
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=forking
+User=root
+Group=root
+ExecStartPre=/bin/sh -c 'chmod 666 /dev/radioberry'
+ExecStart=/etc/init.d/radioberryd start
+ExecStop=/etc/init.d/radioberryd stop
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+Then reload and restart:
+
+bash
+sudo systemctl daemon-reload
+sudo systemctl restart radioberry
+Solution 2: Create a udev Rule (Most Permanent)
+Create a udev rule that sets permissions automatically when the device is created:
+
+bash
+sudo nano /etc/udev/rules.d/99-radioberry.rules
+Add this line:
+
+text
+KERNEL=="radioberry", MODE="0666"
+Then reload udev:
+
+bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+Solution 3: Add to rc.local (Legacy Method)
+bash
+sudo nano /etc/rc.local
+Add before exit 0:
+
+bash
+chmod 666 /dev/radioberry
+Verify the Fix
+After applying one of the solutions:
+
+bash
+# Check permissions
+ls -la /dev/radioberry
+
+# Should show: crw-rw-rw- (666 permissions)
+Quick Test
+You can also check if pi user can access the device:
+
+bash
+# Test read access
+cat /dev/radioberry 2>&1 | head -c 1 && echo " - Device accessible" || echo " - Device not accessible"
+
+# Run pihpsdr
+pihpsdr
+Recommendation: Use Solution 1 (service file) or Solution 2 (udev rule). Both will survive reboots and module reloads. The udev rule is the cleanest method as it works at the kernel level whenever the device node is created.
+
